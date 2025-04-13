@@ -8,16 +8,25 @@ Its main function is to securely share files and folders with recipients:
 
 ## Installation
 
-If you want to compile, download the source code and run from the main directory of the project:
+You can download pre-build binaries for Linux and Windows in [releases](https://github.com/arusson/faseal/releases).
+
+The binary can be put in your path.
+Example:
 ```
-cargo build --release
-mv target/release/faseal ~/.local/bin/
+mv faseal ~/.local/bin/
 ```
 
 It can be installed globally on your system if you have enough privileges:
 ```
-sudo mv target/release/faseal /usr/local/bin/
+sudo mv faseal /usr/local/bin/
 ```
+
+If you want to compile, download the source code and run from the main directory of the project (using the Rust toolchain):
+```
+cargo build --release
+```
+
+Then, the binary in `target/release/`.
 
 ## Usage
 
