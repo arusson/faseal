@@ -1,0 +1,15 @@
+[package]
+name = "faseal-crypto"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+secrecy = { workspace = true }
+subtle = { workspace = true }
+zeroize = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+hex-literal = { version = "1.0.0", default-features = false }
+hex = { workspace = true }
+rand = { version = "0.9.0", default-features = false, features = ["small_rng"] }
