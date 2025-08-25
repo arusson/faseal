@@ -1,6 +1,6 @@
 # FaSEAL - Specifications
 
-This document is a draft for specifications of FaSEAL version 0.1.0.
+This document is a draft for specifications of FaSEAL version 0.1.X.
 
 ## Cryptographic mechanisms
 
