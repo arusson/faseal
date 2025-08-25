@@ -12,4 +12,4 @@ rand = { workspace = true }
 [dev-dependencies]
 hex-literal = { version = "1.0.0", default-features = false }
 hex = { workspace = true }
-rand = { version = "0.9.0", default-features = false, features = ["small_rng"] }
+rand = { version = "0.9", default-features = false, features = ["small_rng"] }
