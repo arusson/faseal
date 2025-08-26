@@ -1,10 +1,10 @@
 [package]
 name = "faseal-core"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [dependencies]
-faseal-crypto = { version = "0.1.0", path="../faseal-crypto" }
+faseal-crypto = { version = "0.1.1", path="../faseal-crypto" }
 brotli = { version = "8.0.2", default-features = false, features = ["std"] }
 dirs = { version = "6.0.0", default-features = false }
 hex = { workspace = true }

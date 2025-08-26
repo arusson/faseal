@@ -16,14 +16,15 @@
 use zeroize::Zeroize;
 
 use crate::ml_kem::{
-    KYBER_K,
-    KYBER_Q,
-    KYBER_Q32,
-    poly::Poly
+    MLKEM_K,
+    MLKEM_Q,
+    MLKEM_Q32,
+    poly::Poly,
+    fq::fq_simple_reduce
 };
 
 #[derive(Clone)]
-pub(crate) struct PolyVec(pub(crate) [Poly; KYBER_K]);
+pub(crate) struct PolyVec(pub(crate) [Poly; MLKEM_K]);
 
 impl Zeroize for PolyVec {
     fn zeroize(&mut self) {
@@ -32,20 +33,26 @@ impl Zeroize for PolyVec {
 }
 
 impl PolyVec {
-    pub(crate) const LEN: usize = Poly::LEN * KYBER_K;
+    pub(crate) const LEN: usize = Poly::LEN * MLKEM_K;
     pub(crate) const COMPRESSED_LEN: usize = 960;
-    pub(crate) const ZERO: Self = Self([Poly::ZERO; KYBER_K]);
+    pub(crate) const ZERO: Self = Self([Poly::ZERO; MLKEM_K]);
 
-    pub(crate) fn mul_mont(&self, rhs: &Self) -> Poly {
-        let mut r = self.0[0].mul_mont(&rhs.0[0]);
-        for i in 1..KYBER_K {
-            let t = self.0[i].mul_mont(&rhs.0[i]);
+    pub(crate) fn mul(&self, rhs: &Self) -> Poly {
+        let mut r = self.0[0].mul(&rhs.0[0]);
+        for i in 1..MLKEM_K {
+            let t = self.0[i].mul(&rhs.0[i]);
             r.radd(&t);
         }
+        // This applies a Barrett reduction and is sufficient:
+        // After a polynomial multiplication in NTT, coefficients are in [-(q-1), q-1].
+        // The accumulation extends this interval to at most [-4(q-1), 4(q-1)] (for ML-KEM-1024),
+        // so it stays within bounds such that the Barrett reduction results with a full
+        // reduction in [-1664, 1664].
         r.reduce();
         r
     }
 
+    // Does not reduce coefficients of each polynomial.
     pub(crate) fn radd(&mut self, rhs: &Self) {
         for (rpoly, apoly) in self.0.iter_mut().zip(rhs.0.iter()) {
             rpoly.radd(apoly);
@@ -74,12 +81,12 @@ impl PolyVec {
 
     pub(crate) fn compress(&self, buffer: &mut [u8; Self::COMPRESSED_LEN]) {
         for (poly, chunk) in self.0.iter().zip(
-            buffer.chunks_exact_mut(Self::COMPRESSED_LEN/KYBER_K)
+            buffer.chunks_exact_mut(Self::COMPRESSED_LEN/MLKEM_K)
         ) {
             for (coefs, dst) in poly.0.chunks_exact(4).zip(chunk.chunks_exact_mut(5)) {
                 let mut t = [0u16; 4];
                 for (tt, &coef) in t.iter_mut().zip(coefs.iter()) {
-                    *tt = (coef + ((coef >> 15) & KYBER_Q)) as u16;
+                    *tt = (coef + ((coef >> 15) & MLKEM_Q)) as u16;
                     let mut d0 = (*tt as u64) << 10;
                     d0 += 1665;
                     d0 *= 1_290_167;
@@ -99,7 +106,7 @@ impl PolyVec {
     pub(crate) fn decompress(buffer: &[u8; Self::COMPRESSED_LEN]) -> Self {
         let mut polyvec = Self::ZERO;
         for (poly, chunk) in polyvec.0.iter_mut().zip(
-            buffer.chunks_exact(Self::COMPRESSED_LEN/KYBER_K)
+            buffer.chunks_exact(Self::COMPRESSED_LEN/MLKEM_K)
         ) {
             for (coefs, src) in poly.0.chunks_exact_mut(4).zip(chunk.chunks_exact(5)) {
                 let mut t = [0u16; 4];
@@ -109,7 +116,8 @@ impl PolyVec {
                 t[3] = ((src[3] as u16) >> 6) | ((src[4] as u16) << 2);
 
                 for (coef, &tt) in coefs.iter_mut().zip(t.iter()) {
-                    *coef = ((((tt & 0x3ff) as i32) * KYBER_Q32 + 512) >> 10) as i16;
+                    *coef = ((((tt & 0x3ff) as i32) * MLKEM_Q32 + 512) >> 10) as i16;
+                    *coef = fq_simple_reduce(*coef);
                 }
             }
         }

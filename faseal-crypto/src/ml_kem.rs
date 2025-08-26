@@ -15,6 +15,7 @@
 
 // adapted from https://github.com/PQClean/PQClean/tree/master/crypto_kem/ml-kem-768/clean
 
+mod fq;
 mod pke;
 mod poly;
 pub(crate) mod polyvec;
@@ -37,9 +38,9 @@ use crate::hashes::sha3::{
     Shake256
 };
 
-const KYBER_K: usize = 3;
-const KYBER_Q: i16 = 3329;
-const KYBER_Q32: i32 = 3329;
+const MLKEM_K: usize = 3;
+const MLKEM_Q: i16 = 3329;
+const MLKEM_Q32: i32 = 3329;
 
 pub(crate) const OFFSET_EK: usize = PKE_SK_LEN;
 pub(crate) const OFFSET_HASH_EK: usize = PKE_SK_LEN + PKE_PK_LEN;
@@ -53,6 +54,7 @@ impl MlKem768 {
     pub(crate) const CIPHERTEXT_LEN: usize = PKE_CT_LEN;
     pub(crate) const OFFSET_EK: usize = OFFSET_EK;
 
+    // FIPS 203, algorithm 16
     pub(crate) fn keygen_derand(
         d: &[u8; 32],
         z: &[u8; 32],
@@ -68,6 +70,7 @@ impl MlKem768 {
         dk[OFFSET_Z..].copy_from_slice(z);
     }
 
+    // FIPS 203, algorithm 17
     pub(crate) fn encaps_derand(
         ek: &[u8; Self::ENCAPSKEY_LEN],
         m: &[u8; 32],
@@ -81,6 +84,7 @@ impl MlKem768 {
         k_r.zeroize();
     }
 
+    // FIPS 203, algorithm 18
     pub(crate) fn decaps(
         dk: &[u8; Self::DECAPSKEY_LEN],
         ct: &[u8; Self::CIPHERTEXT_LEN],
