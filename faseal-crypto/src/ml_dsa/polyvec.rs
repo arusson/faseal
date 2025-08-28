@@ -16,15 +16,15 @@
 use zeroize::Zeroize;
 
 use crate::ml_dsa::{
-    ML_DSA_K,
-    ML_DSA_L,
+    MLDSA_K,
+    MLDSA_L,
     poly::Poly
 };
 
 #[derive(Clone)]
 pub(crate) struct PolyVec<const T: usize>(pub(crate) [Poly; T]);
-pub(crate) type PolyVecK = PolyVec<ML_DSA_K>;
-pub(crate) type PolyVecL = PolyVec<ML_DSA_L>;
+pub(crate) type PolyVecK = PolyVec<MLDSA_K>;
+pub(crate) type PolyVecL = PolyVec<MLDSA_L>;
 
 impl<const T: usize> Zeroize for PolyVec<T> {
     fn zeroize(&mut self) {
@@ -83,6 +83,7 @@ impl<const T: usize> PolyVec<T> {
         true
     }
 
+    // FIPS 204, algorithm 39 (applied on each polynomial)
     pub(crate) fn make_hint(&mut self, a: &Self, b: &Self) -> usize {
         let mut s = 0;
         for (c, (ac, bc)) in self.0.iter_mut().zip(a.0.iter().zip(b.0.iter())) {
@@ -91,6 +92,7 @@ impl<const T: usize> PolyVec<T> {
         s
     }
 
+    // Multiplies each coefficient by 2^13
     pub(crate) fn shiftl(&mut self) {
         for poly in self.0.iter_mut() {
             for coef in poly.0.iter_mut() {
@@ -99,6 +101,7 @@ impl<const T: usize> PolyVec<T> {
         }
     }
 
+    // FIPS 204, algorithm 40 (applied on each polynomial)
     pub(crate) fn use_hint(&mut self, a: &Self) {
         for (poly, apoly) in self.0.iter_mut().zip(a.0.iter()) {
             poly.use_hint(apoly);

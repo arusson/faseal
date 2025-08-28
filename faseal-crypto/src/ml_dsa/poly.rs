@@ -21,18 +21,24 @@ use crate::{
         Shake256
     },
     ml_dsa::{
-        ML_DSA_N,
-        ML_DSA_Q,
-        QINV,
+        MLDSA_N,
+        MLDSA_Q,
         GAMMA_1,
         GAMMA_2,
         ETA,
         LAMBDA4,
-        TAU
+        TAU,
+        fq::{
+            fq_barrett_reduce,
+            fq_decompose,
+            fq_mont_reduce
+        }
     }
 };
 
-const ZETAS: [i32; ML_DSA_N] = [
+// FIPS 204, table of appendix B
+// Each coefficient is muliplied by 2^32 and centered on zero modulo q.
+const ZETAS: [i32; MLDSA_N] = [
     0,           25847, -2608894,  -518909,   237124,  -777960,  -876248,   466468,
     1826347,   2353451,  -359251, -2091905,  3119733, -2884855,  3111497,  2680103,
     2725464,   1024112, -1079900,  3585928,  -549488, -1119584,  2619752, -2108549,
@@ -67,18 +73,8 @@ const ZETAS: [i32; ML_DSA_N] = [
     -554416,   3919660,   -48306, -1362209,  3937738,  1400424,  -846154,  1976782
 ];
 
-fn mont_reduce(a: i64) -> i32 {
-    let t = (a as i32).wrapping_mul(QINV);
-    ((a - (t as i64) * (ML_DSA_Q as i64)) >> 32) as i32
-}
-
-fn reduce32(a: i32) -> i32 {
-    let t = (a + (1 << 22)) >> 23;
-    a - t * ML_DSA_Q
-}
-
 #[derive(Clone)]
-pub(crate) struct Poly(pub(crate) [i32; ML_DSA_N]);
+pub(crate) struct Poly(pub(crate) [i32; MLDSA_N]);
 
 impl Zeroize for Poly {
     fn zeroize(&mut self) {
@@ -92,55 +88,65 @@ impl Poly {
     pub(crate) const T0_LEN:    usize = 32 * 13;
     pub(crate) const T1_LEN:    usize = 32 * 10;
     pub(crate) const W1_LEN:    usize = 32 * 4;
-    pub(crate) const ZERO: Self = Self([0; ML_DSA_N]);
+    pub(crate) const ZERO: Self = Self([0; MLDSA_N]);
  
+    // FIPS 204, algorithm 30
     pub(crate) fn sample_ntt(input: &[u8; 32], s: u8, r: u8) -> Self {
         let mut xof = Shake128::init();
         xof.absorb(&[input, &[s, r]]);
-        let mut buf = [0i32; ML_DSA_N];
+        let mut buf = [0i32; MLDSA_N];
         let mut j = 0;
-        while j < ML_DSA_N {
+        while j < MLDSA_N {
             let mut c = [0u8; 3];
             xof.squeeze(&mut c);
+
+            // FIPS 204, algorithm 14
             c[2] &= 0x7f;
             let z = ((c[2] as i32) << 16) | ((c[1] as i32) << 8) | (c[0] as i32);
-            if z <= ML_DSA_Q {
+            if z <= MLDSA_Q {
                 buf[j] = z;
                 j += 1;
             }
+
         }
         Self(buf)
     }
 
+    // FIPS 204, algorithm 31
     pub(crate) fn sample_bounded(input: &[u8; 64], r: [u8; 2]) -> Self {
         let mut xof = Shake256::init();
         xof.absorb(&[input, &r]);
-        let mut buf = [0i32; ML_DSA_N];
+        let mut buf = [0i32; MLDSA_N];
         let mut j = 0;
-        while j < ML_DSA_N {
+        while j < MLDSA_N {
             let mut z = [0u8; 1];
             xof.squeeze(&mut z);
+
+            // FIPS 204, algorithm 15
             let z0 = (z[0] & 0xf) as i32;
             let z1 = (z[0] >> 4) as i32;
             if z0 < 9 {
                 buf[j] = 4 - z0;
                 j += 1;
             }
-            if z1 < 9 && j < ML_DSA_N {
+            if z1 < 9 && j < MLDSA_N {
                 buf[j] = 4 - z1;
                 j += 1;
             }
+
         }
         xof.zeroize();
         Self(buf)
     }
 
+    // Part of FIPS 204, algorithm 34
     pub(crate) fn sample_gamma(input: &[u8; 64], r: [u8; 2]) -> Self {
         let mut v = [0u8; Self::GAMMA_LEN];
         Shake256::hash_into(&[input, &r], &mut v);
         Self::unpack_bytes_gamma(&v)
     }
 
+    // FIPS 204, algorithm 29
     pub(crate) fn sample_in_ball(input: &[u8; LAMBDA4]) -> Self {
         let mut poly = Self::ZERO;
         let mut xof = Shake256::init();
@@ -167,14 +173,15 @@ impl Poly {
         poly
     }
 
+    // FIPS 204, algorithm 41
     pub(crate) fn ntt(&mut self) {
-        let mut k = 1;
+        let mut m = 1;
         for len in [128, 64, 32, 16, 8, 4, 2, 1] {
-            for start in (0..ML_DSA_N).step_by(2*len) {
-                let zeta = ZETAS[k];
-                k += 1;
+            for start in (0..MLDSA_N).step_by(2*len) {
+                let zeta = ZETAS[m];
+                m += 1;
                 for j in start..(start + len) {
-                    let t = mont_reduce((zeta as i64) * (self.0[j + len] as i64));
+                    let t = fq_mont_reduce((zeta as i64) * (self.0[j + len] as i64));
                     self.0[j + len] = self.0[j] - t;
                     self.0[j] += t;
                 }
@@ -182,6 +189,7 @@ impl Poly {
         }
     }
 
+    // FIPS 204, algorithm 42
     pub(crate) fn inv_ntt(&mut self) {
         const F: i64 = 41_978;
         let mut k = 255;
@@ -193,20 +201,20 @@ impl Poly {
                     let t = self.0[j];
                     self.0[j] = t + self.0[j + len];
                     self.0[j + len] = t - self.0[j + len];
-                    self.0[j + len] = mont_reduce((zeta as i64) * (self.0[j + len] as i64));
+                    self.0[j + len] = fq_mont_reduce((zeta as i64) * (self.0[j + len] as i64));
                 }
             }
         }
 
         for coef in self.0.iter_mut() {
-            *coef = mont_reduce(F * (*coef as i64));
+            *coef = fq_mont_reduce(F * (*coef as i64));
         }
     }
 
     pub(crate) fn mul_mont(&self, rhs: &Self) -> Self {
         let mut r = Self::ZERO;
         for (rc, (&ac, &bc)) in r.0.iter_mut().zip(self.0.iter().zip(rhs.0.iter())) {
-            *rc = mont_reduce((ac as i64) * (bc as i64));
+            *rc = fq_mont_reduce((ac as i64) * (bc as i64));
         }
         r
     }
@@ -225,35 +233,32 @@ impl Poly {
 
     pub(crate) fn reduce(&mut self) {
         for coef in self.0.iter_mut() {
-            *coef = reduce32(*coef);
+            *coef = fq_barrett_reduce(*coef);
         }
     }
 
+    // FIPS 204, algorithm 35
     pub(crate) fn power2round(&mut self) -> Self {
         let mut t0 = Self::ZERO;
-        for (t1c, t0c) in self.0.iter_mut().zip(t0.0.iter_mut()) {
-            *t1c += (*t1c >> 31) & ML_DSA_Q; // make the coefficient in [0, q - 1] first
-            let t = (*t1c + (1 << 12) - 1) >> 13;
-            *t0c = *t1c - (t << 13);
-            *t1c = t;
+        for (r1, r0) in self.0.iter_mut().zip(t0.0.iter_mut()) {
+            *r1 += (*r1 >> 31) & MLDSA_Q;        // positive representation
+            let t = (*r1 + (1 << 12) - 1) >> 13; // r1 = ceil(r+/2^13)
+            *r0 = *r1 - (t << 13);               // r0 = r+ - r1*2^13
+            *r1 = t;
         }
         t0
     }
 
     pub(crate) fn decompose(&mut self, a: &mut Self) {
         for (coef, acoef) in self.0.iter_mut().zip(a.0.iter_mut()) {
-            *coef += (*coef >> 31) & ML_DSA_Q; // make the coefficient in [0, q - 1] first
-            let mut a1 = (*coef + 127) >> 7;
-            a1 = (a1 * 1025 + (1 << 21)) >> 22;
-            a1 &= 0xf;
-
-            *acoef = *coef - a1 * 2 * GAMMA_2;
-            *acoef -= (((ML_DSA_Q - 1)/2 - *acoef) >> 31) & ML_DSA_Q;
-            *coef = a1;
+            (*coef, *acoef) = fq_decompose(*coef);
         }
     }
 
+    // FIPS 204, algorithm 16
+    // b = 2^10 - 1, so bitlen(b) = 10 and T1_LEN = 32 * 10 bytes
     pub(crate) fn pack_bytes_t1(&self, buffer: &mut [u8; Self::T1_LEN]) {
+        // 4 coefficients give 40 bits = 5 bytes
         for (src, dst) in self.0.chunks_exact(4).zip(buffer.chunks_exact_mut(5)) {
             dst[0] =   src[0]                        as u8;
             dst[1] = ((src[0] >> 8) | (src[1] << 2)) as u8;
@@ -263,8 +268,10 @@ impl Poly {
         }
     }
 
+    // FIPS 204, algorithm 18 (with b = 2^10 - 1)
     pub(crate) fn unpack_bytes_t1(buffer: &[u8; Self::T1_LEN]) -> Self {
         let mut poly = Poly::ZERO;
+        // 5 bytes = 40 bits so it gives 4 coefficients (10 bits each)
         for (src, dst) in buffer.chunks_exact(5).zip(poly.0.chunks_exact_mut(4)) {
             dst[0]  = (src[0] as i32) | ((src[1] as i32) << 8);
             dst[0] &= 0x3ff;
@@ -280,7 +287,10 @@ impl Poly {
         poly
     }
 
+    // FIPS 204, algorithm 17
+    // (a, b) = (2^12 - 1, 2^12), so bitlen(a + b) = 13 and T0_LEN = 32 * 13 bytes
     pub(crate) fn pack_bytes_t0(&self, buffer: &mut [u8; Self::T0_LEN]) {
+        // 8 coefficients give 104 bits = 13 bytes
         for (src, dst) in self.0.chunks_exact(8).zip(buffer.chunks_exact_mut(13)) {
             let mut t = [0u32; 8];
             t[0] = ((1 << 12) - src[0]) as u32;
@@ -308,8 +318,11 @@ impl Poly {
         }
     }
 
+    // FIPS 204, algorithm 19
+    // with (a, b) = (2^12 - 1, 2^12)
     pub(crate) fn unpack_bytes_t0(buffer: &[u8; Self::T0_LEN]) -> Self {
         let mut poly = Self::ZERO;
+        // 13 bytes = 104 bits so it gives 8 coefficients (13 bits each)
         for (src, dst) in buffer.chunks_exact(13).zip(poly.0.chunks_exact_mut(8)) {
             dst[0] = (src[0] as i32) | ((src[1] as i32) << 8);
             dst[0] = (1 << 12) - (dst[0] & 0x1fff);
@@ -338,7 +351,10 @@ impl Poly {
         poly
     }
 
+    // FIPS 204, algorithm 17
+    // (a, b) = (eta, eta), so bitlen(a + b) = 4 and ETA_LEN = 32 * 4
     pub(crate) fn pack_bytes_eta(&self, buffer: &mut [u8; Self::ETA_LEN]) {
+        // 2 coefficients give 8 bits = 1 byte
         for (src, dst) in self.0.chunks_exact(2).zip(buffer.iter_mut()) {
             let mut t = [0u8; 2];
             t[0] = (ETA - src[0]) as u8;
@@ -348,8 +364,11 @@ impl Poly {
         }
     }
 
+    // FIPS 204, algorithm 19
+    // (a, b) = (eta, eta)
     pub(crate) fn unpack_bytes_eta(buffer: &[u8; Self::ETA_LEN]) -> Self {
         let mut poly = Self::ZERO;
+        // 1 byte = 8 bits so it gives 2 coefficients (4 bits each)
         for (src, dst) in buffer.iter().zip(poly.0.chunks_exact_mut(2)) {
             dst[0] = ETA -  (src       & 0xf) as i32;
             dst[1] = ETA - ((src >> 4) & 0xf) as i32;
@@ -357,7 +376,10 @@ impl Poly {
         poly
     }
 
+    // FIPS 204, algorithm 17
+    // (a, b) = (gamma_1 - 1, gamma_1), so bitlen(a + b) = 20 and GAMMA_LEN = 32 * 20
     pub(crate) fn pack_bytes_gamma(&self, buffer: &mut [u8; Self::GAMMA_LEN]) {
+        // 2 coefficients give 40 bits = 5 bytes
         for (src, dst) in self.0.chunks_exact(2).zip(buffer.chunks_exact_mut(5)) {
             let mut t = [0u32; 2];
             t[0] = (GAMMA_1 - src[0]) as u32;
@@ -370,8 +392,11 @@ impl Poly {
         }
     }
 
+    // FIPS 204, algorithm 19
+    // (a, b) = (gamma_1, gamma_1)
     pub(crate) fn unpack_bytes_gamma(buffer: &[u8; Self::GAMMA_LEN]) -> Self {
         let mut poly = Self::ZERO;
+        // 5 bytes = 40 bits so it gives 2 coefficients (20 bits each)
         for (src, dst) in buffer.chunks_exact(5).zip(poly.0.chunks_exact_mut(2)) {
             dst[0] = (src[0] as i32) | ((src[1] as i32) << 8) | ((src[2] as i32) << 16);
             dst[0] = GAMMA_1 - (dst[0] & 0xfffff);
@@ -382,7 +407,10 @@ impl Poly {
         poly
     }
 
+    // FIPS 204, algorithm 16
+    // b = 15 so bitlen(b) = 4 and W1_LEN = 32 * 4 bytes
     pub(crate) fn pack_bytes_w1(&self, buffer: &mut [u8; Self::W1_LEN]) {
+        // 2 coefficients give 8 bits = 1 byte
         for (src, dst) in self.0.chunks_exact(2).zip(buffer.iter_mut()) {
             *dst = (src[0] | (src[1]  << 4)) as u8;
         }
@@ -390,6 +418,7 @@ impl Poly {
 
     pub(crate) fn check_norm(&self, norm: i32) -> bool {
         for coef in self.0 {
+            // calculate absolute value of coefficient
             let mut t = coef >> 31;
             t = coef - (t & (2 * coef));
             if t >= norm {
@@ -399,37 +428,42 @@ impl Poly {
         true
     }
 
+    // Alternative to FIPS 204 algorithm 39
+    //   - a: w_0 - cs_2 + ct_0
+    //   - b: w_1
+    // A coefficient of hint h[i] is 0 if:
+    //   - a[i] is in [-gamma_2 + 1, gamma_2]
+    //   - or a[i] = -gamma_2 and b[i] = 0
+    //
+    // See section 5.1 of "CRYSTALS-Dilithium: Algorithm specifications and supporting
+    // documentation (Version 3.1)."
+    // https://pq-crystals.org/dilithium/data/dilithium-specification-round3-20210208.pdf.
     pub(crate) fn make_hint(&mut self, a: &Self, b: &Self) -> usize {
         let mut s = 0;
         for (hc, (&ac, &bc)) in self.0.iter_mut().zip(a.0.iter().zip(b.0.iter())) {
-            *hc = if !(-GAMMA_2..=GAMMA_2).contains(&ac) || ac == -GAMMA_2 && bc != 0 {
-                1
+            *hc = if (-GAMMA_2 + 1..=GAMMA_2).contains(&ac) || ac == -GAMMA_2 && bc == 0 {
+                0
             }
             else {
-                0
+                1
             };
             s += *hc as usize;
         }
         s
     }
 
+    // FIPS 204, algorithm 40
     pub(crate) fn use_hint(&mut self, hint: &Self) {
         for (c, &hc) in self.0.iter_mut().zip(hint.0.iter()) {
-            *c += (*c >> 31) & ML_DSA_Q; // make the coefficient in [0, q - 1] first
-            let mut a1 = (*c + 127) >> 7;
-            a1 = (a1 * 1025 + (1 << 21)) >> 22;
-            a1 &= 0xf;
-        
-            let mut a0 = *c - a1 * 2 * GAMMA_2;
-            a0 -= (((ML_DSA_Q - 1)/2 - a0) >> 31) & ML_DSA_Q;
+            let (r1, r0) = fq_decompose(*c);
             *c = if hc == 0 {
-                a1
+                r1
             }
-            else if a0 > 0 {
-                (a1 + 1) & 15
+            else if r0 > 0 {
+                (r1 + 1) & 15
             }
             else {
-                (a1 - 1) & 15
+                (r1 - 1) & 15
             };
         }
     }

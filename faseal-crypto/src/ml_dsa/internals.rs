@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::cmp::Ordering;
 use zeroize::Zeroize;
 
 use crate::hashes::sha3::Shake256;
@@ -22,8 +21,8 @@ use crate::ml_dsa::{
     GAMMA_1,
     GAMMA_2,
     LAMBDA4,
-    ML_DSA_K,
-    ML_DSA_L,
+    MLDSA_K,
+    MLDSA_L,
     OMEGA,
     poly::Poly,
     polyvec::{
@@ -38,12 +37,13 @@ use crate::traits::sigt::{
 };
 
 const OFFSET_S1: usize = 128;
-const OFFSET_S2: usize = OFFSET_S1 + Poly::ETA_LEN * ML_DSA_L;
-const OFFSET_T0: usize = OFFSET_S2 + Poly::ETA_LEN * ML_DSA_K;
+const OFFSET_S2: usize = OFFSET_S1 + Poly::ETA_LEN * MLDSA_L;
+const OFFSET_T0: usize = OFFSET_S2 + Poly::ETA_LEN * MLDSA_K;
 const OFFSET_Z: usize = 48;
-const OFFSET_HINTS: usize = OFFSET_Z + Poly::GAMMA_LEN * ML_DSA_L;
+const OFFSET_HINTS: usize = OFFSET_Z + Poly::GAMMA_LEN * MLDSA_L;
 
 impl MlDsa65 {
+    // FIPS 204, algorithm 6
     pub(crate) fn keygen_internal(
         seed: &[u8; 32],
         signing_key: &mut [u8; Self::SK_LEN],
@@ -51,13 +51,14 @@ impl MlDsa65 {
     ) {
         // expand seed
         let mut buf = [0u8; 128];
-        Shake256::hash_into(&[seed, &[ML_DSA_K as u8, ML_DSA_L as u8]], &mut buf);
+        Shake256::hash_into(&[seed, &[MLDSA_K as u8, MLDSA_L as u8]], &mut buf);
 
         // generate public matrix Â
         let rho: &[u8; 32] = buf[..32].try_into().unwrap();
-        let a_hat = gen_matrix(rho);
+        let a_hat = expand_a(rho);
 
-        // generation secret vectors
+        // FIPS 204, algorithm 33
+        // generation of secret vectors
         let rhoprime: &[u8; 64] = &buf[32..96].try_into().unwrap();
         let mut s1 = PolyVecL::ZERO;
         for (r, poly) in s1.0.iter_mut().enumerate() {
@@ -65,10 +66,10 @@ impl MlDsa65 {
         }
         let mut s2 = PolyVecK::ZERO;
         for (r, poly) in s2.0.iter_mut().enumerate() {
-            *poly = Poly::sample_bounded(rhoprime, [(ML_DSA_L + r) as u8, 0]);
+            *poly = Poly::sample_bounded(rhoprime, [(MLDSA_L + r) as u8, 0]);
         }
 
-        // generate public vector t = NTT^-1(Â * NTT(s1)) + s2
+        // generate public vector t = NTT^-1(Â ∘ NTT(s1)) + s2
         let mut s1_hat = s1.clone();
         s1_hat.ntt();
         let mut t1 = PolyVecK::ZERO;
@@ -86,12 +87,14 @@ impl MlDsa65 {
             *t0poly = t1poly.power2round();
         }
 
+        // FIPS 204, algorithm 22
         // pack verifying key
         verifying_key[..32].copy_from_slice(rho);
         for (chunk, poly) in verifying_key[32..].chunks_exact_mut(Poly::T1_LEN).zip(t1.0.iter()) {
             poly.pack_bytes_t1(chunk.try_into().unwrap());
         }
 
+        // FIPS 204, algorithm 24
         // pack signing key
         signing_key[..32].copy_from_slice(rho);
         signing_key[32..64].copy_from_slice(&buf[96..]);
@@ -118,6 +121,7 @@ impl MlDsa65 {
         t0.zeroize();
     }
 
+    // FIPS 204, algorithm 7
     pub(crate) fn sign_internal(
         signing_key: &[u8; Self::SK_LEN],
         message: &[u8],
@@ -125,15 +129,16 @@ impl MlDsa65 {
         pre: &[u8],
         ctx: &[u8]
     ) -> [u8; Self::SIG_LEN] {
+        // FIPS 204, algorithm 25
         // refences to individual parts of the signing key
         let rho: &[u8; 32] = &signing_key[..32].try_into().unwrap();
         let key: &[u8; 32] = &signing_key[32..64].try_into().unwrap();
-        let tr: &[u8; 64] = &signing_key[64..128].try_into().unwrap();
-        let s1_bytes: &[u8; ML_DSA_L * Poly::ETA_LEN] = &signing_key[OFFSET_S1..OFFSET_S2]
+        let tr:  &[u8; 64] = &signing_key[64..128].try_into().unwrap();
+        let s1_bytes: &[u8; MLDSA_L * Poly::ETA_LEN] = &signing_key[OFFSET_S1..OFFSET_S2]
             .try_into().unwrap();
-        let s2_bytes: &[u8; ML_DSA_K * Poly::ETA_LEN] = &signing_key[OFFSET_S2..OFFSET_T0]
+        let s2_bytes: &[u8; MLDSA_K * Poly::ETA_LEN] = &signing_key[OFFSET_S2..OFFSET_T0]
             .try_into().unwrap();
-        let t0_bytes: &[u8; ML_DSA_K * Poly::T0_LEN] = &signing_key[OFFSET_T0..]
+        let t0_bytes: &[u8; MLDSA_K * Poly::T0_LEN] = &signing_key[OFFSET_T0..]
             .try_into().unwrap();
     
         // extract s1 in NTT form
@@ -158,7 +163,7 @@ impl MlDsa65 {
         }
 
         // generate matrix A
-        let a_hat = gen_matrix(rho);
+        let a_hat = expand_a(rho);
     
         // message representative and private random seed
         let mut mu = [0u8; 64];
@@ -169,14 +174,14 @@ impl MlDsa65 {
         // rejection sampling loop
         let mut kappa = 0u16;
         let (ctilde, z, h) = loop {
-            // expand mask
+            // FIPS 204, algorithm 34 (expand mask)
             let mut y = PolyVecL::ZERO;
             for poly in y.0.iter_mut() {
                 *poly = Poly::sample_gamma(&rho_second, kappa.to_le_bytes());
                 kappa += 1;
             }
 
-            // w = NTT^-1(Â * NTT(y))
+            // w = NTT^-1(Â ∘ NTT(y))
             let mut z = y.clone();
             z.ntt();
             let mut w1 = PolyVecK::ZERO;
@@ -187,13 +192,16 @@ impl MlDsa65 {
             w1.inv_ntt();
 
             // w decomposed as (w0, w1)
+            // w0 is used to apply the alternative presented in section 5.1 of "CRYSTALS-Dilithium:
+            // Algorithm specifications and supporting documentation (Version 3.1)."
+            // https://pq-crystals.org/dilithium/data/dilithium-specification-round3-20210208.pdf.
             let mut w0 = PolyVecK::ZERO;
             for (w0poly, w1poly) in w0.0.iter_mut().zip(w1.0.iter_mut()) {
                 w1poly.decompose(w0poly);
             }
 
             // encode w1 for commitment hash
-            let mut w1packed = [0u8; ML_DSA_K * Poly::W1_LEN];
+            let mut w1packed = [0u8; MLDSA_K * Poly::W1_LEN];
             for (chunk, poly) in w1packed.chunks_exact_mut(Poly::W1_LEN).zip(w1.0.iter()) {
                 poly.pack_bytes_w1(chunk.try_into().unwrap());
             }
@@ -206,45 +214,55 @@ impl MlDsa65 {
             let mut c = Poly::sample_in_ball(&ctilde);
             c.ntt();
     
-            // NTT^-1(ĉ * ŝ1)
+            // NTT^-1(ĉ ∘ ŝ1)
             for (zpoly, s1poly) in z.0.iter_mut().zip(s1.0.iter()) {
                 *zpoly = c.mul_mont(s1poly);
             }
             z.inv_ntt();
 
-            // signer's response: z <- y + NTT^-1(ĉ * ŝ1)
+            // signer's response: z <- y + NTT^-1(ĉ ∘ ŝ1)
             z.radd(&y);
             z.reduce();
+
+            // first check on the norm of z
             if !z.check_norm(GAMMA_1 - BETA) {
                 continue;
             }
 
-            // NTT^-1(ĉ * ŝ2)
+            // NTT^-1(ĉ ∘ ŝ2)
             let mut h = PolyVecK::ZERO;
             for (hpoly, s2poly) in h.0.iter_mut().zip(s2.0.iter()) {
                 *hpoly = c.mul_mont(s2poly);
             }
             h.inv_ntt();
 
-            // LowBits(w - NTT^-1(ĉ * ŝ2))
+            // LowBits(w - NTT^-1(ĉ ∘ ŝ2))
+            // w0 is used here instead of w (see comment above):
+            // w0 - cs_2 is equivalent to LowBits(w - cs_2)
             w0.rsub(&h);
             w0.reduce();
+            
+            // second check on the norm of LowBits(w - cs_2)
             if !w0.check_norm(GAMMA_2 - BETA) {
                 continue;
             }
 
-            // NTT^-1(ĉ * hat(t0))
+            // NTT^-1(ĉ ∘ hat(t0))
             for (hpoly, t0poly) in h.0.iter_mut().zip(t0.0.iter()) {
                 *hpoly = c.mul_mont(t0poly);
             }
             h.inv_ntt();
             h.reduce();
+
+            // third check on the norm of ct_0
             if !h.check_norm(GAMMA_2) {
                 continue;
             }
 
             // signer's hint
             w0.radd(&h);
+            // at this point, the variable w0 corresponds to w0 - cs_2 + ct_0
+            // and the altenartive method is applied for MakeHint
             let n = h.make_hint(&w0, &w1);
             if n <= OMEGA {
                 y.zeroize();
@@ -257,6 +275,7 @@ impl MlDsa65 {
         t0.zeroize();
         rho_second.zeroize();
     
+        // FIPS 204, algorithm 26
         // pack signature
         let mut sig = [0u8; Self::SIG_LEN];
         sig[..OFFSET_Z].copy_from_slice(&ctilde);
@@ -265,6 +284,8 @@ impl MlDsa65 {
         {
             poly.pack_bytes_gamma(chunk.as_mut().try_into().unwrap());
         }
+        
+        // FIPS 204, algorithm 20
         let mut idx = 0;
         for (i, poly) in h.0.iter().enumerate() {
             for (j, &coef) in poly.0.iter().enumerate() {
@@ -278,6 +299,7 @@ impl MlDsa65 {
         sig
     }
 
+    // FIPS 204, algorithm 8
     pub(crate) fn verify_internal(
         verifying_key: &[u8; Self::VK_LEN],
         message: &[u8],
@@ -285,6 +307,7 @@ impl MlDsa65 {
         pre: &[u8],
         ctx: &[u8],
     ) -> Result<()> {
+        // FIPS 204, algorithm 23
         // unpack verifying key
         let rho: &[u8; 32] = verifying_key[..32].try_into().unwrap();
         let mut t1 = PolyVecK::ZERO;
@@ -292,9 +315,10 @@ impl MlDsa65 {
             *poly = Poly::unpack_bytes_t1(chunk.try_into().unwrap());
         }
 
+        // FIPS 204, algorithm 27
         // unpack signature
         // - signer's commitment hash
-        let ctilde: &[u8; 48] = &sig[..48].try_into().unwrap();
+        let ctilde: &[u8; LAMBDA4] = &sig[..LAMBDA4].try_into().unwrap();
         // - response z
         let mut z = PolyVecL::ZERO;
         for (chunk, poly) in sig[OFFSET_Z..OFFSET_HINTS]
@@ -306,10 +330,11 @@ impl MlDsa65 {
             return Err(Error::InvalidSignature);
         }
         // - hint h
+        //   FIPS 204, algorithm 21
         let mut h = PolyVecK::ZERO;
         let sigh = &sig[OFFSET_HINTS..];
         let mut idx = 0;
-        for i in 0..ML_DSA_K {
+        for i in 0..MLDSA_K {
             if (sigh[OMEGA + i] as usize) < idx || (sigh[OMEGA + i] as usize) > OMEGA {
                 return Err(Error::InvalidSignature);
             }
@@ -328,7 +353,7 @@ impl MlDsa65 {
         }
 
         // generate matrix A
-        let a_hat = gen_matrix(rho);
+        let a_hat = expand_a(rho);
     
         // message representative µ
         let mut tr = [0u8; 64];
@@ -340,14 +365,14 @@ impl MlDsa65 {
         let mut c = Poly::sample_in_ball(ctilde);
 
         // compute w'_approx
-        // - Â * NTT(z)
+        // - Â ∘ NTT(z)
         z.ntt();
         let mut w1 = PolyVecK::ZERO;
         for (poly, arow) in w1.0.iter_mut().zip(a_hat.iter()) {
             *poly = arow.mul_mont(&z);
         }
 
-        // - NTT(c) * NTT(t1 * 2^d)
+        // - NTT(c) ∘ NTT(t1 * 2^d)
         c.ntt();
         t1.shiftl();
         t1.ntt();
@@ -362,9 +387,9 @@ impl MlDsa65 {
 
         // reconstruction of signer's commitment
         w1.use_hint(&h);
-    
+
         // encode w1 for commitment hash
-        let mut w1packed = [0u8; ML_DSA_K * Poly::W1_LEN];
+        let mut w1packed = [0u8; MLDSA_K * Poly::W1_LEN];
         for (chunk, poly) in w1packed.chunks_exact_mut(Poly::W1_LEN).zip(w1.0.iter()) {
             poly.pack_bytes_w1(chunk.try_into().unwrap());
         }
@@ -372,15 +397,18 @@ impl MlDsa65 {
         let mut ctilde_prime = [0u8; LAMBDA4];
         Shake256::hash_into(&[&mu, &w1packed], &mut ctilde_prime);
 
-        match ctilde.cmp(&ctilde_prime) {
-            Ordering::Equal => Ok(()),
-            _ => Err(Error::InvalidSignature)
+        if ctilde == &ctilde_prime {
+            Ok(())
+        }
+        else {
+            Err(Error::InvalidSignature)
         }
     }    
 }
 
-pub(crate) fn gen_matrix(seed: &[u8; 32]) -> [PolyVecL; ML_DSA_K] {
-    let mut a_hat = [PolyVecL::ZERO; ML_DSA_K];
+// FIPS 204, algorithm 32
+pub(crate) fn expand_a(seed: &[u8; 32]) -> [PolyVecL; MLDSA_K] {
+    let mut a_hat = [PolyVecL::ZERO; MLDSA_K];
     for (r, row) in a_hat.iter_mut().enumerate() {
         for (s, poly) in row.0.iter_mut().enumerate() {
             *poly = Poly::sample_ntt(seed, s as u8, r as u8);

@@ -15,6 +15,7 @@
 
 // adapted from https://github.com/PQClean/PQClean/tree/master/crypto_sign/ml-dsa-65/clean
 
+mod fq;
 mod internals;
 mod poly;
 mod polyvec;
@@ -24,13 +25,13 @@ use zeroize::Zeroize;
 
 use crate::traits::sigt::Result;
 
-const ML_DSA_N: usize = 256;
-const ML_DSA_K: usize = 6;
-const ML_DSA_L: usize = 5;
-const ML_DSA_Q:   i32 = 8_380_417;
-const QINV:       i32 = 58_728_449;   // q^-1 mod 2^32
+const MLDSA_N: usize = 256;
+const MLDSA_K: usize = 6;
+const MLDSA_L: usize = 5;
+const MLDSA_Q:   i32 = 8_380_417;
+const QINV:       i32 = 58_728_449; // q^-1 mod 2^32
 const GAMMA_1:    i32 = 1 << 19;
-const GAMMA_2:    i32 = (ML_DSA_Q - 1) / 32;
+const GAMMA_2:    i32 = (MLDSA_Q - 1) / 32;
 const BETA:       i32 = ETA * (TAU as i32);
 const ETA:        i32 = 4;
 const OMEGA:    usize = 55;
@@ -41,11 +42,12 @@ pub(crate) struct MlDsa65;
 
 impl MlDsa65 {
     pub(crate) const SIG_LEN: usize = 3309;
-    pub(crate) const SK_LEN: usize = 4032;
-    pub(crate) const VK_LEN: usize = 1952;
+    pub(crate) const SK_LEN:  usize = 4032;
+    pub(crate) const VK_LEN:  usize = 1952;
 
-    // ctx must be 255 bytes or less to be compliant
-    // it is verified in the hybrid signature call
+    // FIPS 204, algorithm 2
+    // ctx must be 255 bytes or less to be compliant.
+    // It is verified in the hybrid signature call.
     pub(crate) fn sign(
         signing_key: &[u8; Self::SK_LEN],
         message: &[u8],
@@ -58,8 +60,9 @@ impl MlDsa65 {
         signature
     }
 
-    // ctx must be 255 bytes or less to be compliant
-    // it is verifed in the hybrid signature call
+    // FIPS 204, algorithm 3
+    // ctx must be 255 bytes or less to be compliant.
+    // It is verifed in the hybrid signature call.
     pub(crate) fn verify(
         verifying_key: &[u8; Self::VK_LEN],
         message: &[u8],
@@ -78,7 +81,7 @@ mod tests {
     use super::MlDsa65;
 
     #[test]
-    fn test_ml_dsa() {
+    fn test_ml_dsa_1() {
         let mut sk = [0u8; MlDsa65::SK_LEN];
         let mut vk = [0u8; MlDsa65::VK_LEN];
         let message = b"Testing ML-DSA";
