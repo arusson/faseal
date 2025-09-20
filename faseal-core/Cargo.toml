@@ -1,18 +1,20 @@
 [package]
 name = "faseal-core"
-version = "0.1.2"
-edition = "2024"
+version.workspace = true
+authors.workspace = true
+description = "FaSEAL internals"
+edition.workspace = true
 
 [dependencies]
-faseal-crypto = { version = "0.1.1", path="../faseal-crypto" }
+faseal-crypto.path = "../faseal-crypto"
 brotli = { version = "8.0.2", default-features = false, features = ["std"] }
 dirs = { version = "6.0.0", default-features = false }
-hex = { workspace = true }
-secrecy = { workspace = true }
-subtle = { workspace = true }
-rand = { workspace = true }
-zeroize = { workspace = true }
+hex.workspace = true
+rand.workspace = true
+secrecy.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
-hex-literal = { version = "1.0.0", default-features = false }
+hex-literal.workspace = true
 tempfile = "3.21.0"

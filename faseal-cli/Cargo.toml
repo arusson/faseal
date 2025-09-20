@@ -1,12 +1,14 @@
 [package]
 name = "faseal"
-version = "0.1.2"
-edition = "2024"
+version.workspace = true
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
 
 [dependencies]
-rpassword = { version = "7.3.1", default-features = false }
-faseal-core = { version = "0.1.1", path="../faseal-core" }
-faseal-crypto = { version = "0.1.1", path="../faseal-crypto" }
-secrecy = { workspace = true }
-hex = { workspace = true }
+faseal-core.path = "../faseal-core"
+faseal-crypto.path = "../faseal-crypto"
 clap = "4.5.46"
+hex.workspace = true
+rpassword = { version = "7.3.1", default-features = false }
+secrecy.workspace = true

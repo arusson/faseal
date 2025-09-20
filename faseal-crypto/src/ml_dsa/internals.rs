@@ -264,6 +264,7 @@ impl MlDsa65 {
             // at this point, the variable w0 corresponds to w0 - cs_2 + ct_0
             // and the altenartive method is applied for MakeHint
             let n = h.make_hint(&w0, &w1);
+            // fourth check on the number of 1's in h
             if n <= OMEGA {
                 y.zeroize();
                 break (ctilde, z, h);

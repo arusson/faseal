@@ -218,7 +218,7 @@ impl Poly {
         for (&byte, coefs) in msg.iter().zip(poly.0.chunks_exact_mut(8)) {
             for (j, coef) in coefs.iter_mut().enumerate() {
                 let bit = -(((byte >> j) & 1) as i16);
-                *coef ^= bit & ((*coef) ^ 1665);
+                *coef ^= bit & 1665;
             }
         }
         poly

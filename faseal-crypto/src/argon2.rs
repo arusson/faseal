@@ -398,7 +398,7 @@ impl<'a> Argon2<'a> {
         let mut curr_offset = position.lane * self.lane_length
             + position.slice * self.segment_length + starting_index;
 
-        let mut prev_offset = if curr_offset % self.lane_length == 0 {
+        let mut prev_offset = if curr_offset.is_multiple_of(self.lane_length) {
             curr_offset + self.lane_length - 1
         }
         else {
